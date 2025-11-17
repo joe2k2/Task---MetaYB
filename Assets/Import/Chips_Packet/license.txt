@@ -1,0 +1,8 @@
+Model Information:
+* title:	Chips Packet
+* source:	https://sketchfab.com/3d-models/chips-packet-6de5d9c79e794cc78bcbbe8d8fc32c2f
+* author:	yagssvlog099 (https://sketchfab.com/yagssvlog099)
+
+Model License:
+* license type:	SKETCHFAB Standard (https://sketchfab.com/licenses)
+* requirements:	Under basic restrictions, use worldwide, on all types of media, commercially or not, and in all types of derivative works

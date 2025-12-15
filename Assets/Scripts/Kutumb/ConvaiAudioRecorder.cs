@@ -2,6 +2,7 @@
 using Convai.Scripts.Runtime.Core;
 using Convai.Scripts.Runtime.Features.LipSync;
 using System.Collections;
+using System.Collections.Generic;
 using System.IO;
 using UnityEditor;
 using UnityEditor.Animations;
@@ -22,6 +23,9 @@ public class ConvaiAudioRecorder : MonoBehaviour
     [SerializeField] private string audioOutputFolder = "Assets/Audio/Dialogue/";
     [SerializeField] private string animationOutputFolder = "Assets/Animations/LipSync/";
 
+    [Header("Multi-Part Recording Settings")]
+    [SerializeField] private float silenceTimeoutSeconds = 2f;
+
     [Header("Recording Targets (Auto-detected from ConvaiLipSync)")]
     [SerializeField] private SkinnedMeshRenderer headMesh;
     [SerializeField] private SkinnedMeshRenderer teethMesh;
@@ -32,8 +36,9 @@ public class ConvaiAudioRecorder : MonoBehaviour
     [Header("Recording Info")]
     [SerializeField] private int blendShapesRecorded = 0;
     [SerializeField] private int bonesRecorded = 0;
+    [SerializeField] private int audioChunksRecorded = 0;
 
-    private AudioClip recordedClip;
+    private List<AudioClip> recordedClips = new List<AudioClip>();
     private GameObjectRecorder animationRecorder;
     private bool isRecording = false;
 
@@ -66,31 +71,26 @@ public class ConvaiAudioRecorder : MonoBehaviour
         if (facialData.Head.Renderer != null)
         {
             headMesh = facialData.Head.Renderer;
-            Debug.Log($"✓ Detected Head Mesh: {headMesh.name}");
         }
 
         if (facialData.Teeth.Renderer != null)
         {
             teethMesh = facialData.Teeth.Renderer;
-            Debug.Log($"✓ Detected Teeth Mesh: {teethMesh.name}");
         }
 
         if (facialData.Tongue.Renderer != null)
         {
             tongueMesh = facialData.Tongue.Renderer;
-            Debug.Log($"✓ Detected Tongue Mesh: {tongueMesh.name}");
         }
 
         if (facialData.JawBone != null)
         {
             jawBone = facialData.JawBone.transform;
-            Debug.Log($"✓ Detected Jaw Bone: {jawBone.name}");
         }
 
         if (facialData.TongueBone != null)
         {
             tongueBone = facialData.TongueBone.transform;
-            Debug.Log($"✓ Detected Tongue Bone: {tongueBone.name}");
         }
     }
 
@@ -138,8 +138,10 @@ public class ConvaiAudioRecorder : MonoBehaviour
         isRecording = true;
         blendShapesRecorded = 0;
         bonesRecorded = 0;
+        audioChunksRecorded = 0;
+        recordedClips.Clear();
 
-        Debug.Log("<color=cyan>Starting audio + lip sync recording...</color>");
+        Debug.Log("<color=cyan>Starting multi-part audio + lip sync recording...</color>");
 
         AudioSource audioSource = convaiNPC.GetComponent<AudioSource>();
         if (audioSource == null)
@@ -153,64 +155,89 @@ public class ConvaiAudioRecorder : MonoBehaviour
         {
             animationRecorder.BindComponentsOfType<SkinnedMeshRenderer>(headMesh.gameObject, false);
             blendShapesRecorded += headMesh.sharedMesh.blendShapeCount;
-            Debug.Log($"  → Recording {headMesh.sharedMesh.blendShapeCount} blend shapes from {headMesh.name}");
         }
 
         if (teethMesh != null && teethMesh.sharedMesh.blendShapeCount > 0)
         {
             animationRecorder.BindComponentsOfType<SkinnedMeshRenderer>(teethMesh.gameObject, false);
             blendShapesRecorded += teethMesh.sharedMesh.blendShapeCount;
-            Debug.Log($"  → Recording {teethMesh.sharedMesh.blendShapeCount} blend shapes from {teethMesh.name}");
         }
 
         if (tongueMesh != null && tongueMesh.sharedMesh.blendShapeCount > 0)
         {
             animationRecorder.BindComponentsOfType<SkinnedMeshRenderer>(tongueMesh.gameObject, false);
             blendShapesRecorded += tongueMesh.sharedMesh.blendShapeCount;
-            Debug.Log($"  → Recording {tongueMesh.sharedMesh.blendShapeCount} blend shapes from {tongueMesh.name}");
         }
 
         if (jawBone != null)
         {
             animationRecorder.BindComponentsOfType<Transform>(jawBone.gameObject, false);
             bonesRecorded++;
-            Debug.Log($"  → Recording jaw bone: {jawBone.name}");
         }
 
         if (tongueBone != null)
         {
             animationRecorder.BindComponentsOfType<Transform>(tongueBone.gameObject, false);
             bonesRecorded++;
-            Debug.Log($"  → Recording tongue bone: {tongueBone.name}");
         }
 
-        Debug.Log($"<color=yellow>Total: {blendShapesRecorded} blend shapes, {bonesRecorded} bones</color>");
+        Debug.Log($"<color=yellow>Recording: {blendShapesRecorded} blend shapes, {bonesRecorded} bones</color>");
 
         convaiNPC.SendTextDataAsync(dialogueText);
 
         yield return new WaitUntil(() => convaiNPC.IsCharacterTalking);
         yield return new WaitForSeconds(0.1f);
 
-        recordedClip = audioSource.clip;
+        Debug.Log("<color=green>Recording in progress (multi-part)...</color>");
 
-        Debug.Log("<color=green>Recording in progress...</color>");
+        AudioClip currentClip = null;
+        float silenceTimer = 0f;
+        bool hasStartedTalking = false;
 
-        while (convaiNPC.IsCharacterTalking)
+        while (true)
         {
-            animationRecorder.TakeSnapshot(Time.deltaTime);
+            if (convaiNPC.IsCharacterTalking)
+            {
+                hasStartedTalking = true;
+                silenceTimer = 0f;
+
+                if (audioSource.clip != null && audioSource.clip != currentClip)
+                {
+                    currentClip = audioSource.clip;
+                    recordedClips.Add(currentClip);
+                    audioChunksRecorded++;
+                    Debug.Log($"  → Captured audio chunk {audioChunksRecorded}: {currentClip.name}");
+                }
+
+                animationRecorder.TakeSnapshot(Time.deltaTime);
+            }
+            else if (hasStartedTalking)
+            {
+                silenceTimer += Time.deltaTime;
+
+                if (silenceTimer >= silenceTimeoutSeconds)
+                {
+                    Debug.Log($"<color=yellow>Silence detected for {silenceTimeoutSeconds}s - stopping recording</color>");
+                    break;
+                }
+
+                animationRecorder.TakeSnapshot(Time.deltaTime);
+            }
+
             yield return null;
         }
 
-        yield return new WaitForSeconds(0.2f);
+        yield return new WaitForSeconds(0.3f);
 
-        if (recordedClip != null)
+        if (recordedClips.Count > 0)
         {
-            SaveAudioClip(recordedClip, outputFileName);
-            Debug.Log($"✓ Audio saved to {audioOutputFolder}{outputFileName}.wav");
+            AudioClip combinedClip = CombineAudioClips(recordedClips);
+            SaveAudioClip(combinedClip, outputFileName);
+            Debug.Log($"✓ Combined {audioChunksRecorded} audio chunks and saved to {audioOutputFolder}{outputFileName}.wav");
         }
         else
         {
-            Debug.LogError("Failed to capture audio clip!");
+            Debug.LogError("Failed to capture any audio clips!");
         }
 
         SaveAnimationClip(outputFileName);
@@ -218,7 +245,39 @@ public class ConvaiAudioRecorder : MonoBehaviour
         animationRecorder = null;
         isRecording = false;
 
-        Debug.Log($"<color=green>✓ Recording complete! Audio and Lip Sync saved.</color>");
+        Debug.Log($"<color=green>✓ Recording complete! Full multi-part audio and lip sync saved.</color>");
+    }
+
+    private AudioClip CombineAudioClips(List<AudioClip> clips)
+    {
+        if (clips.Count == 1)
+        {
+            return clips[0];
+        }
+
+        int totalSamples = 0;
+        int frequency = clips[0].frequency;
+        int channels = clips[0].channels;
+
+        foreach (AudioClip clip in clips)
+        {
+            totalSamples += clip.samples;
+        }
+
+        AudioClip combinedClip = AudioClip.Create("CombinedDialogue", totalSamples, channels, frequency, false);
+        float[] combinedData = new float[totalSamples * channels];
+
+        int offset = 0;
+        foreach (AudioClip clip in clips)
+        {
+            float[] clipData = new float[clip.samples * channels];
+            clip.GetData(clipData, 0);
+            clipData.CopyTo(combinedData, offset);
+            offset += clipData.Length;
+        }
+
+        combinedClip.SetData(combinedData, 0);
+        return combinedClip;
     }
 
     private void SaveAudioClip(AudioClip clip, string fileName)
@@ -253,6 +312,7 @@ public class ConvaiAudioRecorder : MonoBehaviour
         Debug.Log($"✓ Lip sync animation saved to: {clipPath}");
         Debug.Log($"  - {blendShapesRecorded} blend shapes animated");
         Debug.Log($"  - {bonesRecorded} bones animated");
+        Debug.Log($"  - {audioChunksRecorded} audio chunks combined");
     }
 }
 
